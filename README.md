@@ -38,4 +38,4 @@ uv run pytest -v
 
 Weeks 4–8 move into agentic development with Claude Code, C/ELF/x86-64 fundamentals, Ghidra-based
 static and dynamic analysis, and finally wiring an LLM into Ghidra via MCP to analyze a
-previously-unseen binary — the capstone project.test
+previously-unseen binary — the capstone project.
