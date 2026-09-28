@@ -42,3 +42,19 @@ Once LD_LIBRARY_PATH was set, app_dynamic produced identical output to app_stati
 app_simple (checksum=99162322 clamped=1000), confirming both builds run the exact same
 logic — they differ only in *when* and *how* that logic gets attached to the running
 program, and the size difference is the direct, visible cost of that choice.
+
+## Week 6 — moved Ghidra work to Windows
+
+Mac's Ghidra 12.1.4 install had no native decompiler for mac_arm_64 in the official
+release. Built it locally with ./gradlew buildNatives (succeeded), but the app then
+hung indefinitely on project load afterward, even in a fresh project -- confirmed via
+ps aux showing near-zero CPU time over several minutes, ruling out "just slow."
+Possible Gatekeeper/quarantine interaction with the newly-built unsigned natives,
+not fully diagnosed.
+
+Decision: moved all Ghidra work to a Windows desktop, where the official release
+ships a working native decompiler out of the box. Cloned the repo via git, installed
+Temurin 21 and Ghidra 12.1.4, imported app_dynamic and libmathutils.so -- Decompiler
+panel worked immediately, no native-build step needed. Mac continues to be used for
+everything else (Docker, Python, Claude Code, write-ups); Windows is Ghidra-only.
+Repo (GitHub) is the sync point between the two machines.
