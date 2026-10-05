@@ -43,22 +43,6 @@ app_simple (checksum=99162322 clamped=1000), confirming both builds run the exac
 logic — they differ only in *when* and *how* that logic gets attached to the running
 program, and the size difference is the direct, visible cost of that choice.
 
-
-## Week 6 — moved Ghidra work to Windows
-
-Mac's Ghidra 12.1.4 install had no native decompiler for mac_arm_64 in the official
-release. Built it locally with ./gradlew buildNatives (succeeded), but the app then
-hung indefinitely on project load afterward, even in a fresh project -- confirmed via
-ps aux showing near-zero CPU time over several minutes, ruling out "just slow."
-Possible Gatekeeper/quarantine interaction with the newly-built unsigned natives,
-not fully diagnosed.
-
-Decision: moved all Ghidra work to a Windows desktop, where the official release
-ships a working native decompiler out of the box. Cloned the repo via git, installed
-Temurin 21 and Ghidra 12.1.4, imported app_dynamic and libmathutils.so -- Decompiler
-panel worked immediately, no native-build step needed. Mac continues to be used for
-everything else (Docker, Python, Claude Code, write-ups); Windows is Ghidra-only.
-Repo (GitHub) is the sync point between the two machines.
 ## Day 4 — ELF scavenger hunt (app_dynamic)
 
 1. Entry point: 0x10c0 (readelf -h)
@@ -241,6 +225,21 @@ Disassembly of section .fini:
     11b4:	add    rsp,0x8
     11b8:	ret
 
+## Week 6 — moved Ghidra work to Windows
+
+Mac's Ghidra 12.1.4 install had no native decompiler for mac_arm_64 in the official
+release. Built it locally with ./gradlew buildNatives (succeeded), but the app then
+hung indefinitely on project load afterward, even in a fresh project -- confirmed via
+ps aux showing near-zero CPU time over several minutes, ruling out "just slow."
+Possible Gatekeeper/quarantine interaction with the newly-built unsigned natives,
+not fully diagnosed.
+
+Decision: moved all Ghidra work to a Windows desktop, where the official release
+ships a working native decompiler out of the box. Cloned the repo via git, installed
+Temurin 21 and Ghidra 12.1.4, imported app_dynamic and libmathutils.so -- Decompiler
+panel worked immediately, no native-build step needed. Mac continues to be used for
+everything else (Docker, Python, Claude Code, write-ups); Windows is Ghidra-only.
+Repo (GitHub) is the sync point between the two machines.
 
 ## Week 6 — stripping experiment
 
@@ -259,4 +258,105 @@ which explains the indirect CALL QWORD PTR seen in Route B.
 
 Takeaway: a dynamically linked binary always leaks the names of the library functions it
 calls, however thoroughly it's stripped -- free information about what it does.
+## Week 6 — Cross-library data-flow map (input: argv[1] = "hello")
 
+```
+app_dynamic (executable)                            libmathutils.so (shared library)
+------------------------                            --------------------------------
+main @ 001011a9
+  argc: EDI -> local_1c   (001011b5)
+  argv: RSI -> local_28   (001011b8)
+      |
+      | argv[1] = [argv + 0x8]          (001011e7..ef)
+      v
+  RDI = argv[1]; CALL strlen            (001011f5)
+      | RAX -> EDX, truncated to 32 bits (001011fa)
+      v
+  ESI = length   (32-bit)               (00101207)
+  RDI = argv[1]  (64-bit pointer)       (00101209)
+  CALL checksum                         (0010120c)
+      |
+      v
+  checksum stub, .plt.sec @ 001010b0
+    ENDBR64
+    JMP [00103fd0] --- GOT slot, filled by loader --->  checksum @ 00101129
+                                                        RDI -> local_20, ESI -> local_24
+                                                        acc = acc*32 - acc + byte
+      <---------------- RET, EAX = sum -----------------+
+  sum -> local_10                       (00101211)
+      |
+      v
+  EDI = sum, ESI = 0, EDX = 0x3e8       (00101214..21)
+  CALL clamp -> stub -> GOT ----------------------->  clamp @ 001010f9
+                                                        EDI, ESI, EDX -> locals
+                                                        three plain branches
+      <---------------- RET, EAX = clamped -------------+
+  clamped -> local_c                    (00101228)
+      |
+      v
+  RDI = "checksum=%u clamped=%d\n" (00102018)
+  ESI = sum, EDX = clamped
+  CALL printf                           (00101242)
+      -> stdout: checksum=99162322 clamped=1000
+```
+
+### Walkthrough
+
+1. main @ 001011a9 receives argc in EDI and argv in RSI (System V arguments 1 and 2),
+   spilling them to local_1c (001011b5) and local_28 (001011b8).
+2. argc is compared to 1 at 001011bc; JG at 001011c0 skips the usage branch.
+3. argv[1] is computed at 001011e7..ef as [argv + 0x8]: index 1 times the 8-byte
+   pointer size.
+4. RDI = argv[1] at 001011f2; CALL strlen at 001011f5. The length returns in RAX, and
+   MOV EDX,EAX at 001011fa keeps only the low 32 bits. This is the `& 0xffffffff` that
+   appears in the decompilation.
+5. argv[1] is reloaded at 001011fc..204 (an -O0 artifact). ESI = length at 00101207,
+   RDI = argv[1] at 00101209: the pointer in the 64-bit register, the length in the
+   32-bit one.
+6. CALL at 0010120c lands in the .plt.sec stub at 001010b0: ENDBR64, then
+   JMP qword ptr [00103fd0] at 001010b4. Encoding check: `ff 25 16 2f 00 00` is a
+   RIP-relative jump; next instruction 001010ba + 0x2f16 = 00103fd0, the GOT slot.
+   That slot is empty on disk (Ghidra's EXTERNAL placeholder at 00105028 shows only
+   `??` bytes), and the loader fills it with checksum's real address at runtime. This
+   is why app_dynamic failed without LD_LIBRARY_PATH in Week 5.
+7. The real checksum runs in libmathutils.so @ 00101129, a different file
+   (matches nm -D's 0x1129).
+   a. Arguments arrive exactly where main placed them: RDI -> local_20 at 00101131,
+      ESI -> local_24 at 00101135.
+   b. The *31 is compiled as SHL EAX,5 then SUB EAX,EDX at 0010114d..50
+      (acc*32 - acc). There is no multiply instruction; the decompiler reconstructed
+      0x1f from the shift-and-subtract pattern.
+   c. Each byte is read with MOVZX (zero-extended, so unsigned) at 00101161, and the
+      loop condition uses JL (signed) at 00101176, matching unsigned char data and
+      int n. The result is placed in EAX at 00101178.
+8. The checksum returns in EAX and is saved to local_10 at 00101211.
+9. clamp's arguments are set at 00101214..21: EDI = sum, ESI = 0, EDX = 0x3e8 (1000).
+   CALL at 00101223 goes through clamp's own stub and GOT slot.
+   a. The real clamp is in libmathutils.so @ 001010f9 (matches nm -D's 0x10f9).
+      Arguments arrive in EDI, ESI, EDX at 00101101..07. The code is three plain
+      branches (JGE at 00101110, JLE at 0010111d) with one shared RET at 00101128,
+      a direct translation of the source. The decompiler's single compound condition
+      was its own restructuring.
+   b. The result returns in EAX and is saved to local_c at 00101228.
+10. printf's arguments: RDI = format string at 00102018 (loaded 00101233..3a),
+    ESI = sum (0010122e..31), EDX = clamped (0010122b). EAX = 0 at 0010123d tells
+    the variadic printf that no vector registers carry arguments. CALL printf at
+    00101242 prints "checksum=99162322 clamped=1000".
+11. main returns 0 (MOV EAX,0 at 00101247; LEAVE/RET at 0010124c..4d). The usage
+    branch returns 1 (MOV EAX,1 at 001011e0). The decompiler merged these two returns
+    into `return param_1 < 2`; the assembly keeps them separate.
+
+**Verification:** both library addresses were confirmed by two independent tools,
+nm -D in the container and the Symbol Tree in Ghidra.
+## Week 6 — static vs. dynamic
+
+| | app_dynamic | app_static |
+|---|---|---|
+| File size | 16,064 bytes | 785,432 bytes |
+| Functions in Symbol Tree | ~10 | ~300 |
+| Finding main | Immediate (named; one string XREF) | Hard; buried among libc internals, needed help |
+| checksum/clamp | <EXTERNAL> stubs, real code in libmathutils.so | [confirm: real functions inside the binary] |
+
+Dynamic is easier: the import boundary names every library call, so the program's own
+logic stands out. Static better represents a real unknown sample: it has no .dynsym
+imports to leak, so a stripped static binary loses even its libc function names.
