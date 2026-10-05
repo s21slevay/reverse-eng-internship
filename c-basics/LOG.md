@@ -43,6 +43,7 @@ app_simple (checksum=99162322 clamped=1000), confirming both builds run the exac
 logic — they differ only in *when* and *how* that logic gets attached to the running
 program, and the size difference is the direct, visible cost of that choice.
 
+
 ## Week 6 — moved Ghidra work to Windows
 
 Mac's Ghidra 12.1.4 install had no native decompiler for mac_arm_64 in the official
@@ -58,3 +59,204 @@ Temurin 21 and Ghidra 12.1.4, imported app_dynamic and libmathutils.so -- Decomp
 panel worked immediately, no native-build step needed. Mac continues to be used for
 everything else (Docker, Python, Claude Code, write-ups); Windows is Ghidra-only.
 Repo (GitHub) is the sync point between the two machines.
+## Day 4 — ELF scavenger hunt (app_dynamic)
+
+1. Entry point: 0x10c0 (readelf -h)
+2. Section headers: 31 (readelf -h)
+3. String constant: usage line lives in .rodata (strings -t x app_dynamic | grep usage)
+4. main: address 0x11a9, size 165 bytes (readelf -s)
+5. .text size: 0x18e = 398 bytes (readelf -SW)
+6. PIE: yes — "DYN (Position-Independent Executable file)" (readelf -h) and
+   "pie executable" (file)
+7. Needed libraries: libmathutils.so, libc.so.6 (readelf -d / ldd).
+   libmathutils.so is among them, confirmed.
+8. checksum: undefined (U) in app_dynamic — nm app_dynamic | grep checksum -> "U checksum".
+   Resolved from libmathutils.so at runtime, unlike main which is T (defined, in .text).
+9. Symbol count: 33 before stripping, "no symbols" after (nm's literal message on
+   app_stripped, not a zero count). Still runs identically after stripping
+   (LD_LIBRARY_PATH=. ./app_stripped hello -> checksum=99162322 clamped=1000).
+10. Sections after stripping: 29 (down from 31). .symtab and .strtab are gone.
+    Every section holding actual code/data (.text, .rodata, .data, .bss, .plt,
+    .dynsym, .dynstr, .got) survived untouched — stripping removed only the
+    human-readable name table, not the program itself.
+
+## Day 5 
+
+
+tiny:     file format elf64-x86-64
+
+
+Disassembly of section .init:
+
+0000000000001000 <_init>:
+    1000:	endbr64
+    1004:	sub    rsp,0x8
+    1008:	mov    rax,QWORD PTR [rip+0x2fd9]        # 3fe8 <__gmon_start__@Base>
+    100f:	test   rax,rax
+    1012:	je     1016 <_init+0x16>
+    1014:	call   rax
+    1016:	add    rsp,0x8
+    101a:	ret
+
+Disassembly of section .plt:
+
+0000000000001020 <.plt>:
+    1020:	push   QWORD PTR [rip+0x2fa2]        # 3fc8 <_GLOBAL_OFFSET_TABLE_+0x8>
+    1026:	jmp    QWORD PTR [rip+0x2fa4]        # 3fd0 <_GLOBAL_OFFSET_TABLE_+0x10>
+    102c:	nop    DWORD PTR [rax+0x0]
+
+Disassembly of section .plt.got:
+
+0000000000001030 <__cxa_finalize@plt>:
+    1030:	endbr64
+    1034:	jmp    QWORD PTR [rip+0x2fbe]        # 3ff8 <__cxa_finalize@GLIBC_2.2.5>
+    103a:	nop    WORD PTR [rax+rax*1+0x0]
+
+Disassembly of section .text:
+
+0000000000001040 <_start>:
+    1040:	endbr64
+    1044:	xor    ebp,ebp
+    1046:	mov    r9,rdx
+    1049:	pop    rsi
+    104a:	mov    rdx,rsp
+    104d:	and    rsp,0xfffffffffffffff0
+    1051:	push   rax
+    1052:	push   rsp
+    1053:	xor    r8d,r8d
+    1056:	xor    ecx,ecx
+    1058:	lea    rdi,[rip+0x11c]        # 117b <main>
+    105f:	call   QWORD PTR [rip+0x2f73]        # 3fd8 <__libc_start_main@GLIBC_2.34>
+    1065:	hlt
+    1066:	cs nop WORD PTR [rax+rax*1+0x0]
+
+0000000000001070 <deregister_tm_clones>:
+    1070:	lea    rdi,[rip+0x2f99]        # 4010 <__TMC_END__>
+    1077:	lea    rax,[rip+0x2f92]        # 4010 <__TMC_END__>
+    107e:	cmp    rax,rdi
+    1081:	je     1098 <deregister_tm_clones+0x28>
+    1083:	mov    rax,QWORD PTR [rip+0x2f56]        # 3fe0 <_ITM_deregisterTMCloneTable@Base>
+    108a:	test   rax,rax
+    108d:	je     1098 <deregister_tm_clones+0x28>
+    108f:	jmp    rax
+    1091:	nop    DWORD PTR [rax+0x0]
+    1098:	ret
+    1099:	nop    DWORD PTR [rax+0x0]
+
+00000000000010a0 <register_tm_clones>:
+    10a0:	lea    rdi,[rip+0x2f69]        # 4010 <__TMC_END__>
+    10a7:	lea    rsi,[rip+0x2f62]        # 4010 <__TMC_END__>
+    10ae:	sub    rsi,rdi
+    10b1:	mov    rax,rsi
+    10b4:	shr    rsi,0x3f
+    10b8:	sar    rax,0x3
+    10bc:	add    rsi,rax
+    10bf:	sar    rsi,1
+    10c2:	je     10d8 <register_tm_clones+0x38>
+    10c4:	mov    rax,QWORD PTR [rip+0x2f25]        # 3ff0 <_ITM_registerTMCloneTable@Base>
+    10cb:	test   rax,rax
+    10ce:	je     10d8 <register_tm_clones+0x38>
+    10d0:	jmp    rax
+    10d2:	nop    WORD PTR [rax+rax*1+0x0]
+    10d8:	ret
+    10d9:	nop    DWORD PTR [rax+0x0]
+
+00000000000010e0 <__do_global_dtors_aux>:
+    10e0:	endbr64
+    10e4:	cmp    BYTE PTR [rip+0x2f25],0x0        # 4010 <__TMC_END__>
+    10eb:	jne    1118 <__do_global_dtors_aux+0x38>
+    10ed:	push   rbp
+    10ee:	cmp    QWORD PTR [rip+0x2f02],0x0        # 3ff8 <__cxa_finalize@GLIBC_2.2.5>
+    10f6:	mov    rbp,rsp
+    10f9:	je     1107 <__do_global_dtors_aux+0x27>
+    10fb:	mov    rdi,QWORD PTR [rip+0x2f06]        # 4008 <__dso_handle>
+    1102:	call   1030 <__cxa_finalize@plt>
+    1107:	call   1070 <deregister_tm_clones>
+    110c:	mov    BYTE PTR [rip+0x2efd],0x1        # 4010 <__TMC_END__>
+    1113:	pop    rbp
+    1114:	ret
+    1115:	nop    DWORD PTR [rax]
+    1118:	ret
+    1119:	nop    DWORD PTR [rax+0x0]
+
+0000000000001120 <frame_dummy>:
+    1120:	endbr64
+    1124:	jmp    10a0 <register_tm_clones>
+
+0000000000001129 <add3>:
+    1129:	endbr64
+    112d:	push   rbp
+    112e:	mov    rbp,rsp
+    1131:	mov    DWORD PTR [rbp-0x4],edi
+    1134:	mov    DWORD PTR [rbp-0x8],esi
+    1137:	mov    DWORD PTR [rbp-0xc],edx
+    113a:	mov    edx,DWORD PTR [rbp-0x4]
+    113d:	mov    eax,DWORD PTR [rbp-0x8]
+    1140:	add    edx,eax
+    1142:	mov    eax,DWORD PTR [rbp-0xc]
+    1145:	add    eax,edx
+    1147:	pop    rbp
+    1148:	ret
+
+0000000000001149 <sum_to>:
+    1149:	endbr64
+    114d:	push   rbp
+    114e:	mov    rbp,rsp
+    1151:	mov    DWORD PTR [rbp-0x14],edi
+    1154:	mov    DWORD PTR [rbp-0x8],0x0
+    115b:	mov    DWORD PTR [rbp-0x4],0x1
+    1162:	jmp    116e <sum_to+0x25>
+    1164:	mov    eax,DWORD PTR [rbp-0x4]
+    1167:	add    DWORD PTR [rbp-0x8],eax
+    116a:	add    DWORD PTR [rbp-0x4],0x1
+    116e:	mov    eax,DWORD PTR [rbp-0x4]
+    1171:	cmp    eax,DWORD PTR [rbp-0x14]
+    1174:	jle    1164 <sum_to+0x1b>
+    1176:	mov    eax,DWORD PTR [rbp-0x8]
+    1179:	pop    rbp
+    117a:	ret
+
+000000000000117b <main>:
+    117b:	endbr64
+    117f:	push   rbp
+    1180:	mov    rbp,rsp
+    1183:	push   rbx
+    1184:	mov    edx,0x3
+    1189:	mov    esi,0x2
+    118e:	mov    edi,0x1
+    1193:	call   1129 <add3>
+    1198:	mov    ebx,eax
+    119a:	mov    edi,0xa
+    119f:	call   1149 <sum_to>
+    11a4:	add    eax,ebx
+    11a6:	mov    rbx,QWORD PTR [rbp-0x8]
+    11aa:	leave
+    11ab:	ret
+
+Disassembly of section .fini:
+
+00000000000011ac <_fini>:
+    11ac:	endbr64
+    11b0:	sub    rsp,0x8
+    11b4:	add    rsp,0x8
+    11b8:	ret
+
+
+## Week 6 — stripping experiment
+
+nm libmathutils_stripped.so    -> no symbols
+nm -D libmathutils_stripped.so -> T checksum @ 0x1129, T clamp @ 0x10f9
+                                  (plus weak toolchain hooks: _ITM_*, __cxa_finalize, __gmon_start__)
+nm -D app_stripped             -> U checksum, U clamp, U printf, U strlen, U __libc_start_main
+
+strip removes .symtab/.strtab but cannot remove .dynsym: the loader needs those names
+at runtime. The library exports checksum and clamp by name (T); the executable imports
+them by name (U). That's why app_stripped lost main's name -- a local symbol that lived
+only in .symtab -- but Ghidra still labeled checksum, clamp, printf, and strlen.
+
+__libc_start_main is the runtime-resolved function entry calls with main's address,
+which explains the indirect CALL QWORD PTR seen in Route B.
+
+Takeaway: a dynamically linked binary always leaks the names of the library functions it
+calls, however thoroughly it's stripped -- free information about what it does.
+
