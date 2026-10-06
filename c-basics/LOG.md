@@ -360,3 +360,21 @@ nm -D in the container and the Symbol Tree in Ghidra.
 Dynamic is easier: the import boundary names every library call, so the program's own
 logic stands out. Static better represents a real unknown sample: it has no .dynsym
 imports to leak, so a stripped static binary loses even its libc function names.
+
+## Week 6 Day 5 — blind target behavioral verification
+
+Ran sensor_stripped in re-lab-x86 (after chmod +x; the file arrived without its
+execute bit). Every prediction from static analysis matched:
+
+| Input | Output | Confirms |
+|---|---|---|
+| temp 400  | encoded 7 bytes: 5e 4f 47 5a 10 1f 1a | x0.125 scale, "label:value", XOR 0x2a |
+| temp 404  | encoded 7 bytes: 5e 4f 47 5a 10 1f 1b | +0.5 then (int) cast rounds 50.5 -> 51 |
+| temp 1023 | encoded 8 bytes: ... 10 1b 18 12      | upper bound inclusive; 127.875 -> 128 |
+| temp 1024 | out of range                          | bound is exactly 0x3ff |
+| temp abc  | encoded 6 bytes: ... 10 1a            | atoi("abc") = 0, which passes validation |
+| temp      | usage: ./sensor_stripped <label> <raw> | argc check |
+
+The temp 404 and temp 1023 results test claims that came from reading the code
+(rounding, inclusive bound), not just from observing output, so the static analysis
+is confirmed by behavior.
