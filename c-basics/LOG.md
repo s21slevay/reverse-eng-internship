@@ -378,3 +378,103 @@ execute bit). Every prediction from static analysis matched:
 The temp 404 and temp 1023 results test claims that came from reading the code
 (rounding, inclusive bound), not just from observing output, so the static analysis
 is confirmed by behavior.
+
+# Week 7 Log — Connecting Claude to Ghidra
+
+## Day 1 Part A — Windows migration
+
+Moved the full toolchain to the Windows desktop so Ghidra, Docker, and Claude Code all
+live on one machine. Mac remains available; GitHub is the sync point.
+
+**Virtualization.** Docker Desktop failed: "Virtualization is disabled in firmware."
+The Windows "UEFI Firmware Settings" option didn't appear in Advanced startup, so entered
+the BIOS by tapping Delete at boot. On the ASUS TUF Gaming X570-Plus (Ryzen 9 5900X):
+F7 (Advanced Mode) -> Advanced -> CPU Configuration -> SVM Mode -> Enabled -> F10.
+Also ran `wsl --install` from an admin PowerShell (restart, not shut down, to apply).
+
+**Lab rebuild.** Rebuilt re-lab-x86 from lab/Dockerfile; `uname -m` -> x86_64.
+First launch showed an empty /work: Git Bash rewrote the container path in -v. Fixed with:
+
+    MSYS_NO_PATHCONV=1 docker run -it --rm --platform linux/amd64 \
+      -v /c/Users/lizal/reverse-eng-internship:/work re-lab-x86
+
+**Reproducibility check.** Rebuilt app_check from target/ source:
+`checksum=99162322 clamped=1000`, matching Week 5. `file` reports ELF 64-bit x86-64 for
+app_dynamic, app_static, app_stripped, and libmathutils.so. Their BuildIDs match the Mac's
+Week 5 output exactly (2ddfc3b8..., 6479de2d..., b1cb8436...), so the binaries crossed via
+Git byte-for-byte. This is the payoff for version-controlling the environment in Week 2.
+
+**Ghidra.** 12.1.4 moved from a double-nested Downloads folder to
+C:\ghidra\ghidra_12.1.4_PUBLIC\ (launched via ghidraRun.bat). Decompiler works out of the
+box on Windows. All six programs imported: app_dynamic, app_stripped, app_static,
+libmathutils.so, sensor_stripped, libsensorlog.so.
+
+**Claude Code.** Installed with `irm https://claude.ai/install.ps1 | iex` (PowerShell).
+The installer placed claude.exe in C:\Users\lizal\.local\bin, which wasn't on PATH; added
+it to the user PATH and reopened terminals. `claude --version` confirmed.
+
+**Line endings.** `git config --global core.autocrlf input`.
+
+**Recurring lesson:** check the prompt before every command. `lizal@...` is Windows
+(docker, git, claude); `root@...` is the container (gcc, file, running binaries). Several
+"No such file or directory" errors this week came from running a command on the wrong side.
+
+## Day 1 Part B — GhidraMCP
+
+Installed themixednuts/GhidraMCP, an embedded MCP server with no separate Python bridge.
+The README confirms it requires Ghidra 12.1.4, matching my install. (Avoided the
+similarly named bethington/ghidra-mcp, which targets an older Ghidra and needs a bridge.)
+
+Install: File -> Install Extensions -> + -> zip -> checked -> full Ghidra restart.
+On first CodeBrowser open, the "New Plugins Found" dialog was dismissed without checking
+the plugin, leaving it disabled and port 8080 closed (`curl` -> could not connect).
+Enabled manually: CodeBrowser -> File -> Configure -> Configure All Plugins -> GhidraMCP.
+
+Verified the server: `curl -i http://127.0.0.1:8080/mcp` returned HTTP 400 from Jetty with
+"text/event-stream required in Accept header; Session ID required in mcp-session-id
+header." That's the server up and working; plain curl just doesn't speak MCP.
+
+Connected Claude Code from the repo:
+
+    claude mcp add ghidra "http://127.0.0.1:8080/mcp" --transport http
+
+The server only runs while a program is open in the CodeBrowser.
+
+## First test — main in app_dynamic
+
+Asked Claude to decompile and explain main. Every claim verified against Week 6 evidence:
+- param_1 = argc, param_2 = argv
+- No argument -> usage, returns 1; otherwise returns 0. Correct even though the decompiler
+  shows a single `return param_1 < 2`; the assembly has two separate returns
+  (EAX=1 at 001011e0, EAX=0 at 00101247).
+- `& 0xffffffff` passes the length as a 32-bit int (MOV EDX,EAX at 001011fa).
+- clamp to 0-1000, print both values.
+- Correctly noted that checksum and clamp live in libmathutils.so.
+
+## First LLM finding — a signed/unsigned bug in my own code
+
+Claude untangled Ghidra's compound clamp condition into the correct three cases and computed
+"a" -> 97 and "abc" -> 96354 correctly. It then claimed that checksum (unsigned, printed
+with %u) and clamp (signed int; JGE/JLE at 00101110/0010111d) disagree once the hash exceeds
+0x7FFFFFFF, making clamp return 0. Verified by running app_dynamic in the container:
+
+| Input | Checksum | As signed int | Clamped |
+|---|---|---|---|
+| a | 97 | 97 | 97 |
+| abc | 96354 | 96354 | 1000 |
+| reverseengineering | 4046928625 | -248038671 | 0 |
+| internship | 2704357454 | -1590609842 | 0 |
+| aerospace | 2084439109 | 2084439109 | 1000 |
+| maryland | 260092742 | 260092742 | 1000 |
+
+The dividing line is 2^31 = 2,147,483,648; aerospace sits about 63 million under it.
+
+- **Claim 1 (wraparound -> clamped=0): confirmed.** A real signed/unsigned mismatch in my
+  Week 5 code that I missed by hand.
+- **Claim 2 ("most strings longer than one or two characters hit 1000"): wrong for long
+  inputs.** Once the hash wraps, the top bit decides, and long strings split roughly 50/50
+  between 0 and 1000. The model's own wraparound reasoning contradicted its generalization.
+
+**Takeaway:** the model found a genuine bug and made a confident claim that didn't hold,
+in the same answer. Reading the output couldn't tell them apart; running the binary did.
+Verification, not the summary, is the deliverable.
