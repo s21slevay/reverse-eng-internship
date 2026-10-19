@@ -5,6 +5,7 @@ RUN apt-get update && apt-get install -y \
     file \
     gdb \
     xxd \
+    python3 \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /work
 CMD ["bash"]
